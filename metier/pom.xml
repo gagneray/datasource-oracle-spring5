@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>com.monentreprise.monappli</groupId>
+        <artifactId>monappli-parent</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+    <artifactId>monappli-metier</artifactId>
+
+    <dependencies>
+        <!-- ===== À AJOUTER dans le pom du module metier ===== -->
+
+        <!-- JdbcTemplate + DataSourceUtils. Même version que spring-context (le BOM / la propriété
+             spring.version du projet la fixe : ne pas mettre de version en dur). -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-jdbc</artifactId>
+        </dependency>
+
+        <!-- Probablement déjà présent dans votre projet -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-context</artifactId>
+        </dependency>
+
+        <!-- PAS de driver Oracle (ojdbc) ici : avec un DataSource JNDI, le driver est fourni
+             par JBoss (module com.oracle / oracle.jdbc). L'embarquer dans l'EAR provoque des conflits. -->
+
+        <!-- ===== Tests uniquement ===== -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>junit</groupId>
+            <artifactId>junit</artifactId>
+            <version>4.13.2</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- Mockito 4.x : dernière ligne compatible Java 8 (Mockito 5 exige Java 11) -->
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
+            <version>4.11.0</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- Base en mémoire, en mode de compatibilité Oracle, pour tester sans JBoss ni Oracle -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <version>2.1.214</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

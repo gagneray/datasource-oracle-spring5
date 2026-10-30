@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Contexte Spring de TEST : remplace le DataSource JNDI de JBoss par une base H2 en mémoire
+  (mode de compatibilité Oracle) et ne scanne QUE le package dao.
+
+  On n'importe pas metier-context.xml : son component-scan chargerait TOUS les services du module,
+  avec leurs propres dépendances (cache, autres ressources JBoss...), et le test échouerait pour
+  des raisons sans rapport avec la base de données.
+-->
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xmlns:context="http://www.springframework.org/schema/context"
+       xmlns:jdbc="http://www.springframework.org/schema/jdbc"
+       xsi:schemaLocation="
+           http://www.springframework.org/schema/beans   http://www.springframework.org/schema/beans/spring-beans.xsd
+           http://www.springframework.org/schema/context http://www.springframework.org/schema/context/spring-context.xsd
+           http://www.springframework.org/schema/jdbc    http://www.springframework.org/schema/jdbc/spring-jdbc.xsd">
+
+    <!-- Même type que le bean de production (javax.sql.DataSource) : JdbcQueryDao n'y voit que du feu.
+         SimpleDriverDataSource n'a pas de pool : réservé aux tests (cf. doc Spring). -->
+    <bean id="dataSource" class="org.springframework.jdbc.datasource.SimpleDriverDataSource">
+        <property name="driverClass" value="org.h2.Driver"/>
+        <property name="url" value="jdbc:h2:mem:monappli;MODE=Oracle;DB_CLOSE_DELAY=-1"/>
+        <property name="username" value="sa"/>
+        <property name="password" value=""/>
+    </bean>
+
+    <!-- Crée les tables et insère le jeu de données au démarrage du contexte -->
+    <jdbc:initialize-database data-source="dataSource">
+        <jdbc:script location="classpath:sql/schema.sql"/>
+        <jdbc:script location="classpath:sql/data.sql"/>
+    </jdbc:initialize-database>
+
+    <!-- Scan restreint à la couche d'accès aux données (adaptez le package : fr.blablabla.metier.dao) -->
+    <context:component-scan base-package="com.monentreprise.monappli.metier.dao"/>
+
+</beans>

@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Extrait à FUSIONNER dans votre application-springbean.xml existant :
+   1. les déclarations de namespace "context" et "jee" (xmlns + schemaLocation) si elles manquent ;
+   2. le <context:property-placeholder> s'il n'existe pas déjà (n'en gardez qu'un) ;
+   3. le bean "dataSource".
+-->
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xmlns:context="http://www.springframework.org/schema/context"
+       xmlns:jee="http://www.springframework.org/schema/jee"
+       xsi:schemaLocation="
+           http://www.springframework.org/schema/beans   http://www.springframework.org/schema/beans/spring-beans.xsd
+           http://www.springframework.org/schema/context http://www.springframework.org/schema/context/spring-context.xsd
+           http://www.springframework.org/schema/jee     http://www.springframework.org/schema/jee/spring-jee.xsd">
+
+    <!-- Lit application.properties et remplace les ${...} dans les fichiers XML Spring.
+         (Équivalent de ce que Spring Boot fait tout seul avec application.properties.)
+         Les propriétés système JVM (-Dcle=valeur, ou <system-properties> du standalone.xml)
+         sont aussi consultées et priment sur le fichier : utile pour surcharger une valeur
+         sur un environnement donné (README § 5.4). -->
+
+    <!-- Ce fichier et metier-context.xml doivent être chargés dans le MÊME contexte Spring
+         (contextConfigLocation du web.xml ou <import>), sinon JdbcQueryDao ne trouvera pas "dataSource". -->
+    <context:property-placeholder location="classpath:application.properties"/>
+
+    <!-- =================================================================
+         A. (RECOMMANDÉ sur JBoss) DataSource récupéré dans l'annuaire JNDI du serveur.
+            JBoss gère connexion, pool, driver et mot de passe protégé.
+            Équivalent Spring Boot : spring.datasource.jndi-name=...
+         ================================================================= -->
+    <jee:jndi-lookup id="dataSource"
+                     jndi-name="${datasource.jndi}"
+                     expected-type="javax.sql.DataSource"/>
+
+    <!-- =================================================================
+         B. (ALTERNATIVE, seulement si JBoss NE déclare PAS la datasource)
+            Pool géré par l'application. Nécessite d'ajouter la dépendance
+            org.apache.commons:commons-dbcp2:2.9.0 et le driver ojdbc8 dans l'EAR.
+            Supprimez le bloc A ci-dessus si vous utilisez celui-ci.
+         ================================================================= -->
+    <!--
+    <bean id="dataSource" class="org.apache.commons.dbcp2.BasicDataSource" destroy-method="close">
+        <property name="driverClassName" value="oracle.jdbc.OracleDriver"/>
+        <property name="url"             value="${datasource.connection-url}"/>
+        <property name="username"        value="${datasource.security-login}"/>
+        <property name="password"        value="${datasource.security-password-secured}"/>
+        <property name="minIdle"         value="${datasource.min-pool-size}"/>
+        <property name="maxTotal"        value="${datasource.max-pool-size}"/>
+        <property name="validationQuery" value="SELECT 1 FROM DUAL"/>
+    </bean>
+    -->
+
+</beans>

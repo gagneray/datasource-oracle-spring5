@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  metier-context.xml : AUCUNE modification nécessaire.
+
+  Le component-scan existant détecte JdbcQueryDao (annotée @Repository) dès lors que sa classe
+  se trouve SOUS le package scanné, par exemple fr.blablabla.metier.dao.
+  Il active aussi l'injection par annotations (@Autowired, injection par constructeur).
+
+  Le bean "dataSource" n'est pas déclaré ici : il vient de application-springbean.xml (module config)
+  en production, et de test-context.xml en test.
+-->
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xmlns:context="http://www.springframework.org/schema/context"
+       xsi:schemaLocation="
+           http://www.springframework.org/schema/beans   http://www.springframework.org/schema/beans/spring-beans.xsd
+           http://www.springframework.org/schema/context http://www.springframework.org/schema/context/spring-context.xsd">
+
+    <!-- Votre ligne existante (ici avec le package de la démo) -->
+    <context:component-scan base-package="com.monentreprise.monappli.metier"/>
+
+</beans>
