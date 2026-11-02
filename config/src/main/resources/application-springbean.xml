@@ -18,7 +18,7 @@
          (Équivalent de ce que Spring Boot fait tout seul avec application.properties.)
          Les propriétés système JVM (-Dcle=valeur, ou <system-properties> du standalone.xml)
          sont aussi consultées et priment sur le fichier : utile pour surcharger une valeur
-         sur un environnement donné (README § 5.4). -->
+         sur un environnement donné (README § 6.4). -->
 
     <!-- Ce fichier et metier-context.xml doivent être chargés dans le MÊME contexte Spring
          (contextConfigLocation du web.xml ou <import>), sinon JdbcQueryDao ne trouvera pas "dataSource". -->

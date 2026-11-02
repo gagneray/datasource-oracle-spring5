@@ -1,12 +1,16 @@
 package com.monentreprise.monappli.metier.dao;
 
+import java.sql.ResultSet;
 import java.util.List;
 import java.util.Map;
 
 import javax.sql.DataSource;
+import javax.sql.rowset.CachedRowSet;
+import javax.sql.rowset.RowSetProvider;
 
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.ResultSetExtractor;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
 
@@ -79,4 +83,47 @@ public class JdbcQueryDao {
     public <T> List<T> select(String query, RowMapper<T> rowMapper, String... params) {
         return jdbcTemplate.query(query, rowMapper, (Object[]) params);
     }
+
+    /**
+     * <b>Méthode de TRANSITION</b> pour migrer l'existant avec un minimum de changements :
+     * remplace {@code statement.executeQuery(sql)} et renvoie un vrai {@link ResultSet},
+     * que le code appelant parcourt comme avant ({@code while (rs.next()) { rs.getString(...) } }).
+     *
+     * <p>Le ResultSet renvoyé est une copie <b>déconnectée</b> ({@link CachedRowSet}) : toutes les lignes
+     * sont chargées en mémoire, puis connexion, statement et ResultSet JDBC sont fermés et la connexion
+     * est rendue au pool <i>avant</i> le retour de la méthode. L'appelant n'a donc plus rien à libérer
+     * (un {@code rs.close()} restant dans l'ancien code est sans effet néfaste).</p>
+     *
+     * <p>À éviter pour des requêtes renvoyant un très grand nombre de lignes (tout est en mémoire).
+     * Cible à terme : {@link #select(String, RowMapper, String...)}.</p>
+     *
+     * <pre>{@code
+     * // Avant : rs = con.createStatement().executeQuery("SELECT ... WHERE VILLE = '" + ville + "'");
+     * ResultSet rs = dao.executeQuery("SELECT ID, NOM FROM CLIENT WHERE VILLE = ?", ville);
+     * while (rs.next()) { ... code existant inchangé ... }
+     * }</pre>
+     *
+     * @param query  requête SQL, avec ou sans marqueurs {@code ?} (une requête existante sans paramètre
+     *               fonctionne telle quelle)
+     * @param params valeurs des marqueurs, dans l'ordre (aucune si la requête n'a pas de {@code ?})
+     * @return un ResultSet déconnecté, positionné avant la première ligne
+     * @throws DataAccessException en cas d'erreur SQL pendant l'exécution (et non plus SQLException)
+     */
+    public ResultSet executeQuery(String query, String... params) {
+        return jdbcTemplate.query(query, COPIE_DECONNECTEE, (Object[]) params);
+    }
+
+    /**
+     * Copie le ResultSet JDBC (encore connecté) dans un CachedRowSet autonome.
+     * La fabrique est l'implémentation standard du JDK, chargée explicitement via le class loader
+     * système : avec le chargement modulaire de JBoss, {@code RowSetProvider.newFactory()} sans argument
+     * peut ne pas trouver cette implémentation depuis le class loader de l'application.
+     */
+    private static final ResultSetExtractor<ResultSet> COPIE_DECONNECTEE = rs -> {
+        CachedRowSet copie = RowSetProvider
+                .newFactory("com.sun.rowset.RowSetFactoryImpl", ClassLoader.getSystemClassLoader())
+                .createCachedRowSet();
+        copie.populate(rs);
+        return copie;
+    };
 }

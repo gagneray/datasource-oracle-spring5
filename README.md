@@ -13,12 +13,13 @@ metier/
     src/main/resources/metier-context.xml                                   INCHANGÉ : le component-scan existant suffit
     src/test/java/.../dao/JdbcQueryDaoTest.java              à CRÉER : test unitaire avec Mockito
     src/test/java/.../dao/JdbcQueryDaoIntegrationTest.java   à CRÉER : test avec une base H2 en mémoire
+    src/test/java/.../dao/MigrationResultSetVersDtoTest.java à CRÉER : exemple de migration ResultSet → DTO (§ 4)
     src/test/resources/test-context.xml, sql/schema.sql, sql/data.sql      à CRÉER
 ```
 
 Remplacez `com.monentreprise.monappli` par le package racine réel du projet.
-Les modules `ws` et `ear` ne changent pas (voir § 7).
-Pour la valorisation des propriétés selon l'environnement, voir § 5.
+Les modules `ws` et `ear` ne changent pas (voir § 8).
+Pour la valorisation des propriétés selon l'environnement, voir § 6.
 
 ---
 
@@ -129,11 +130,135 @@ code : par constructeur, ou avec `@Autowired` si c'est la convention du projet. 
 
 ---
 
-## 4. Tester sans JBoss ni Oracle
+## 4. Migrer l'existant : du ResultSet au DTO, en deux étapes
+
+Le code existant fait `statement.executeQuery(sql)` puis parcourt le `ResultSet`. L'objectif est de
+migrer d'abord **sans toucher à la lecture des lignes**, puis de passer aux DTO.
+
+### 4.1 Pourquoi on ne renvoie pas le ResultSet JDBC « vivant »
+
+Un ResultSet JDBC n'est lisible que tant que sa connexion est ouverte. Le renvoyer tel quel
+obligerait chaque appelant à refermer la connexion lui-même : c'est exactement le risque de fuite
+qu'on veut supprimer. Avec un pool de `max-pool-size` connexions, quelques oublis suffisent à bloquer
+l'application. `JdbcTemplate` ferme donc tout dès la fin de la requête.
+
+`executeQuery` renvoie à la place une **copie déconnectée** : un `CachedRowSet`, l'implémentation
+standard du JDK de l'interface `java.sql.ResultSet`. Les lignes sont copiées en mémoire, la connexion
+est rendue au pool, et l'appelant reçoit un objet qui se lit exactement comme avant.
+
+### 4.2 Étape 1 : refacto minimal avec `executeQuery`
+
+**Avant :**
+```java
+Connection con = null; Statement stmt = null; ResultSet rs = null;
+try {
+    con = UtilitaireBdd.getConnection();
+    stmt = con.createStatement();
+    rs = stmt.executeQuery("SELECT ID, NOM FROM CLIENT WHERE VILLE = '" + ville + "'");
+    while (rs.next()) {
+        Client c = new Client();
+        c.setId(rs.getLong("ID"));
+        c.setNom(rs.getString("NOM"));
+        clients.add(c);
+    }
+} catch (SQLException e) {
+    throw new TechniqueException("Erreur BDD", e);
+} finally {
+    UtilitaireBdd.release(con, stmt, rs);
+}
+```
+
+**Après :**
+```java
+try {
+    ResultSet rs = jdbcQueryDao.executeQuery("SELECT ID, NOM FROM CLIENT WHERE VILLE = ?", ville);
+    while (rs.next()) {                      // inchangé
+        Client c = new Client();
+        c.setId(rs.getLong("ID"));
+        c.setNom(rs.getString("NOM"));
+        clients.add(c);
+    }
+} catch (SQLException | DataAccessException e) {   // ⚠️ voir ci-dessous
+    throw new TechniqueException("Erreur BDD", e);
+}
+```
+
+Ce qui change :
+1. **Obtention du ResultSet** : une seule ligne, `jdbcQueryDao.executeQuery(sql, params...)`.
+   Une requête existante dont les valeurs sont déjà dans la chaîne fonctionne **telle quelle**, sans
+   paramètre. Passer aux `?` est recommandé, mais peut se faire au fil de l'eau.
+2. **Plus de connexion, de statement ni de `release`** à gérer. Un `rs.close()` qui resterait est sans effet néfaste.
+3. ⚠️ **Gestion des erreurs** : une erreur d'exécution SQL (table absente, syntaxe, base
+   indisponible) arrive maintenant sous forme de `DataAccessException` (non vérifiée), **plus** de
+   `SQLException`. Un `catch (SQLException e)` existant reste compilable, parce que `rs.next()` et les
+   `getXxx` la déclarent toujours, mais il **ne verra plus** ces erreurs. Si l'existant les convertit
+   en exception métier ou en faute SOAP, ajoutez `DataAccessException` au `catch`, comme ci-dessus.
+
+Points d'attention de cette étape :
+- **Mémoire** : toutes les lignes sont chargées. C'est parfait pour des résultats de taille courante,
+  mais à éviter pour des extractions massives (plusieurs centaines de milliers de lignes) : passez
+  alors directement à l'étape 2.
+- **Alias de colonnes** : le `CachedRowSet` retrouve une colonne par son *nom*. Avec Oracle, le nom
+  d'une colonne aliasée (`SELECT NOM AS N`) est l'alias, donc `rs.getString("N")` fonctionne.
+  D'autres bases, dont H2 dans les tests, peuvent renvoyer le nom d'origine : dans les tests, préférez
+  les colonnes sans alias, ou la lecture par index.
+- **Colonnes Oracle de type `TIMESTAMP`** (pas `DATE`) : selon la version du driver, la copie peut
+  contenir des objets `oracle.sql.TIMESTAMP`, et `rs.getTimestamp(...)` lève alors une
+  `ClassCastException`. Le correctif est un réglage de JBoss, pas du code : la propriété système
+  `-Doracle.jdbc.J2EE13Compliant=true`, ou la même propriété de connexion sur la datasource. Testez
+  une requête avec un `TIMESTAMP` en recette dès la première livraison.
+
+### 4.3 Étape 1 bis : isoler la lecture d'une ligne
+
+Sans rien changer d'autre, sortez le corps de la boucle dans une méthode dont la signature est
+`(ResultSet, int) → objet` :
+
+```java
+ResultSet rs = jdbcQueryDao.executeQuery(SQL_CLIENTS_PAR_VILLE, ville);
+while (rs.next()) {
+    clients.add(mapClient(rs, rs.getRow()));
+}
+
+private Client mapClient(ResultSet rs, int rowNum) throws SQLException {
+    Client c = new Client();
+    c.setId(rs.getLong("ID"));
+    c.setNom(rs.getString("NOM"));
+    return c;
+}
+```
+
+### 4.4 Étape 2 : la même méthode devient un `RowMapper`, la méthode renvoie des DTO
+
+`mapClient` a exactement la signature d'un `RowMapper<Client>`. On la passe à `select`, et le
+ResultSet disparaît du code appelant :
+
+```java
+List<Client> clients = jdbcQueryDao.select(SQL_CLIENTS_PAR_VILLE, this::mapClient, ville);
+```
+
+Ce qu'on y gagne :
+- plus de copie en mémoire intermédiaire, chaque ligne est convertie à la volée ;
+- plus de `try/catch` sur `SQLException` : seules les `DataAccessException` remontent ;
+- un DTO typé, prêt à être renvoyé par le service ou converti en réponse SOAP.
+
+Pour aller plus loin, uniquement si le besoin se présente :
+- **Mapper partagé** : si plusieurs services lisent le même DTO, déplacez la méthode dans une classe
+  `ClientRowMapper implements RowMapper<Client>`, dans `...metier.dao.mapper`.
+- **Mapping automatique** : `BeanPropertyRowMapper.newInstance(Client.class)` remplit le DTO quand
+  les noms de colonnes correspondent aux propriétés (`NOM_CLIENT` → `nomClient`). C'est pratique,
+  mais une colonne mal nommée donne une propriété `null` sans erreur. Le mapping explicite reste plus
+  sûr pour du code métier.
+
+`MigrationResultSetVersDtoTest` exécute ces trois étapes sur la base H2, avec la même méthode `mapClient`.
+
+---
+
+## 5. Tester sans JBoss ni Oracle
 
 | Test | Ce qu'il vérifie | Ce qu'il lui faut |
 |---|---|---|
 | `JdbcQueryDaoTest` | Requête préparée, paramètres liés dans l'ordre, **fermeture de ResultSet/Statement/Connection**, y compris sur erreur | Mockito uniquement |
+| `MigrationResultSetVersDtoTest` | Les étapes de migration du § 4 : `executeQuery` avec la boucle existante, puis la même logique en `RowMapper` | H2 en mémoire |
 | `JdbcQueryDaoIntegrationTest` | Le câblage Spring réel (scan du package `dao`, injection du DataSource) et de vraies requêtes SQL | H2 en mémoire, `MODE=Oracle` (accepte `DUAL`, `NVL`, `VARCHAR2`…) |
 
 Lancement : `mvn test -pl metier`.
@@ -155,9 +280,9 @@ doivent être validées sur une vraie base Oracle de recette.
 
 ---
 
-## 5. Valorisation des propriétés selon l'environnement
+## 6. Valorisation des propriétés selon l'environnement
 
-### 5.1 Principe : le même EAR partout, la configuration dans chaque JBoss
+### 6.1 Principe : le même EAR partout, la configuration dans chaque JBoss
 
 Côté Spring, l'application ne lit qu'**une** propriété : `datasource.jndi`. Sa valeur est en général
 **identique sur tous les environnements**. Ce nom sert d'étiquette ; ce qu'il désigne change d'un
@@ -175,7 +300,7 @@ serveur à l'autre :
 
 On construit donc l'EAR une seule fois : celui qui a été testé en recette est celui qui part en production.
 
-### 5.2 URL, login, mot de passe, pool : dans la configuration de chaque JBoss
+### 6.2 URL, login, mot de passe, pool : dans la configuration de chaque JBoss
 
 Ces valeurs vivent dans le `standalone.xml` ou le `domain.xml` de chaque serveur. On les y met en
 général par une commande jboss-cli, exécutée par l'exploitation ou par l'outil de déploiement. Les
@@ -195,7 +320,7 @@ data-source add --name=MonAppliDS \
 Le mot de passe (`-secured`) est normalement stocké chiffré par l'outillage, puis injecté côté JBoss
 via le vault ou une expression `${VAULT::...}`. Il n'apparaît jamais en clair dans le livrable ni dans Git.
 
-### 5.3 Comment `application.properties` est fourni par environnement
+### 6.3 Comment `application.properties` est fourni par environnement
 
 Trois mécanismes se rencontrent dans ce type de projet. **Suivez celui qui est déjà utilisé** pour les
 autres propriétés qui changent selon l'environnement, comme une URL de webservice :
@@ -206,7 +331,7 @@ autres propriétés qui changent selon l'environnement, comme une URL de webserv
 | **Substitution au déploiement** (Jenkins, Ansible, XL Deploy…) | Jetons ou valeurs vides dans le fichier versionné, remplacés avant la pose sur le serveur | Ajouter les clés et déclarer leurs valeurs dans l'outil, pour chaque environnement |
 | **Profils Maven** (un build par environnement) | `<profiles>` et `<filtering>true</filtering>` dans les pom | Ça fonctionne, mais c'est à éviter : le binaire de recette n'est plus celui de production |
 
-### 5.4 Surcharger une valeur sans toucher au fichier
+### 6.4 Surcharger une valeur sans toucher au fichier
 
 `<context:property-placeholder>` ne cherche pas les valeurs uniquement dans `application.properties`.
 Il regarde aussi les **propriétés système de la JVM**, et celles-ci ont **la priorité** sur le fichier.
@@ -224,15 +349,15 @@ On peut donc surcharger une valeur sur un serveur donné :
 > d'environnement du système : `DATASOURCE_JNDI` ne remplacera **pas** `datasource.jndi`.
 > Passez par des propriétés système (`-D...`).
 
-### 5.5 À transmettre à l'équipe qui déploie
+### 6.5 À transmettre à l'équipe qui déploie
 
 - la liste des clés `datasource.*` et le nom JNDI attendu (`datasource.jndi`) ;
-- la demande de création de la datasource sur chaque JBoss (commande du § 5.2) ;
-- la vérification par `test-connection-in-pool` (§ 6) avant le premier déploiement.
+- la demande de création de la datasource sur chaque JBoss (commande du § 6.2) ;
+- la vérification par `test-connection-in-pool` (§ 7) avant le premier déploiement.
 
 ---
 
-## 6. Vérifier sur le JBoss distant
+## 7. Vérifier sur le JBoss distant
 
 1. La datasource existe et répond (jboss-cli) :
    ```
@@ -252,7 +377,7 @@ On peut donc surcharger une valeur sur un serveur donné :
 
 ---
 
-## 7. Points de vigilance
+## 8. Points de vigilance
 
 - **Version Spring** : « 5.12 » n'existe pas. Il s'agit probablement de 5.1.2, 5.2.12 ou 5.3.12.
   Le code fonctionne avec toute version 5.x. `spring-jdbc` doit avoir **la même version** que
@@ -269,7 +394,7 @@ On peut donc surcharger une valeur sur un serveur donné :
   `jboss-deployment-structure.xml` ne change pas, sauf si le code utilise des classes
   `oracle.jdbc.*` (cast, `unwrap`). Dans ce cas, ajoutez la dépendance vers le module Oracle de JBoss.
 - **Mot de passe** : `datasource.security-password-secured` est géré côté JBoss (vault ou
-  security-domain). Ne le versionnez jamais en clair (voir § 5.2).
+  security-domain). Ne le versionnez jamais en clair (voir § 6.2).
 - **Les deux XML dans le même contexte** : au déploiement, `application-springbean.xml` (qui définit
   `dataSource`) et `metier-context.xml` (qui contient le scan de `JdbcQueryDao`) doivent être chargés
   ensemble. C'est le cas s'ils sont listés dans le `contextConfigLocation` du `web.xml` ou reliés
@@ -288,7 +413,7 @@ On peut donc surcharger une valeur sur un serveur donné :
 
 ---
 
-## 8. Correspondance Spring Boot → Spring XML
+## 9. Correspondance Spring Boot → Spring XML
 
 | Ce que vous faites en Spring Boot | Ici (Spring 5, XML, JBoss) |
 |---|---|
@@ -302,8 +427,8 @@ On peut donc surcharger une valeur sur un serveur donné :
 | `@SpringBootTest` | `@RunWith(SpringJUnit4ClassRunner.class)` + `@ContextConfiguration("classpath:test-context.xml")` |
 | `@MockBean` | `Mockito.mock(...)` passé au constructeur du service |
 | Profils `application-test.properties` | Un fichier XML de test qui redéfinit le bean `dataSource` (`test-context.xml`) |
-| `application-prod.properties` / profils par environnement | Même EAR partout ; valeurs fournies par chaque JBoss (datasource, module de config) — § 5 |
-| Variables d'environnement `SPRING_DATASOURCE_URL` (relaxed binding) | Pas d'équivalent automatique : propriétés système `-Dcle=valeur` (§ 5.4) |
+| `application-prod.properties` / profils par environnement | Même EAR partout ; valeurs fournies par chaque JBoss (datasource, module de config) — § 6 |
+| Variables d'environnement `SPRING_DATASOURCE_URL` (relaxed binding) | Pas d'équivalent automatique : propriétés système `-Dcle=valeur` (§ 6.4) |
 
 ---
 
