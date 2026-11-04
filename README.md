@@ -5,7 +5,7 @@ indique s'il est **à créer** ou **à fusionner** avec un fichier existant.
 
 ```
 config/src/main/resources/
-    application.properties          à FUSIONNER : propriétés datasource.*
+    application.properties          AUCUNE clé datasource.* (datasource.jndi vient de JBoss, § 6.3)
     application-springbean.xml      à FUSIONNER : bean "dataSource" (lookup JNDI)
 metier/
     pom.xml                         à FUSIONNER : spring-jdbc + dépendances de test
@@ -15,10 +15,11 @@ metier/
     src/test/java/.../dao/JdbcQueryDaoIntegrationTest.java   à CRÉER : test avec une base H2 en mémoire
     src/test/java/.../dao/MigrationResultSetVersDtoTest.java à CRÉER : exemple de migration ResultSet → DTO (§ 4)
     src/test/resources/test-context.xml, sql/schema.sql, sql/data.sql      à CRÉER
+docker-local/                       OUTIL LOCAL (hors livrable) : JBoss sous Docker pour vérifier la config (§ 8)
 ```
 
 Remplacez `com.monentreprise.monappli` par le package racine réel du projet.
-Les modules `ws` et `ear` ne changent pas (voir § 8).
+Les modules `ws` et `ear` ne changent pas (voir § 9).
 Pour la valorisation des propriétés selon l'environnement, voir § 6.
 
 ---
@@ -40,11 +41,13 @@ Pour la valorisation des propriétés selon l'environnement, voir § 6.
 `max-pool-size`, `security-*`) portent les noms des attributs d'une datasource **JBoss**. Sur un
 serveur d'applications, la bonne pratique (la Javadoc Spring de `DriverManagerDataSource` la donne)
 consiste à laisser le serveur créer le pool et à le récupérer par son nom JNDI. Côté application,
-seule `datasource.jndi` est lue. Les autres propriétés servent à créer la datasource dans JBoss
-(CLI, script, équipe d'exploitation).
+seule `datasource.jndi` est lue, et elle est fournie par JBoss sous forme de propriété système (§ 6.3).
+Les autres propriétés servent à créer la datasource dans JBoss (CLI, script, équipe d'exploitation) :
+elles ne figurent pas dans le livrable.
 
 Si JBoss **ne** déclare **pas** cette datasource, utilisez l'alternative B, en commentaire dans
-`application-springbean.xml`. Elle crée un pool commons-dbcp2 à partir des propriétés et
+`application-springbean.xml`. Elle crée un pool commons-dbcp2 à partir des propriétés
+`datasource.*`, qu'il faudra alors fournir à l'application (propriétés système JBoss, § 6.3), et
 nécessite d'embarquer `ojdbc8` dans l'EAR.
 
 **Pourquoi un `JdbcQueryDao` plutôt qu'une classe utilitaire statique ?** C'est un bean Spring
@@ -320,38 +323,59 @@ data-source add --name=MonAppliDS \
 Le mot de passe (`-secured`) est normalement stocké chiffré par l'outillage, puis injecté côté JBoss
 via le vault ou une expression `${VAULT::...}`. Il n'apparaît jamais en clair dans le livrable ni dans Git.
 
-### 6.3 Comment `application.properties` est fourni par environnement
+### 6.3 `datasource.jndi` est fourni par JBoss, pas par le livrable
 
-Trois mécanismes se rencontrent dans ce type de projet. **Suivez celui qui est déjà utilisé** pour les
-autres propriétés qui changent selon l'environnement, comme une URL de webservice :
+Aucune clé `datasource.*` n'est présente dans `application.properties`. La seule utile à
+l'application, `datasource.jndi`, est fournie **par chaque JBoss** sous forme de **propriété système
+JVM**. `<context:property-placeholder>` résout `${datasource.jndi}` en consultant aussi les propriétés
+système, sans configuration supplémentaire.
 
-| Mécanisme | Comment le reconnaître | Ce qu'il faut faire |
-|---|---|---|
-| **Module JBoss externe** (le plus probable, vu le module `config` sans code) | `jboss-deployment-structure.xml` contient une dépendance du type `<module name="...config..."/>` ; les fichiers sont déposés sur chaque serveur dans `modules/.../config/main/` | Ajouter les clés `datasource.*` au gabarit ; l'exploitation les renseigne pour chaque environnement |
-| **Substitution au déploiement** (Jenkins, Ansible, XL Deploy…) | Jetons ou valeurs vides dans le fichier versionné, remplacés avant la pose sur le serveur | Ajouter les clés et déclarer leurs valeurs dans l'outil, pour chaque environnement |
-| **Profils Maven** (un build par environnement) | `<profiles>` et `<filtering>true</filtering>` dans les pom | Ça fonctionne, mais c'est à éviter : le binaire de recette n'est plus celui de production |
+Attention à ne pas confondre les trois maillons de la chaîne. `datasource.jndi` n'est **pas** un
+chemin de fichier : c'est le **nom JNDI** de la datasource.
 
-### 6.4 Surcharger une valeur sans toucher au fichier
+```
+ propriété système JVM          nom JNDI                                 datasource JBoss (standalone.xml)
+ datasource.jndi  ───────────►  java:jboss/datasources/MonAppliDS  ───►  URL, login, mot de passe, pool
+ (fournie par JBoss)            (valeur de la propriété)                 (créée par jboss-cli, § 6.2)
+```
 
-`<context:property-placeholder>` ne cherche pas les valeurs uniquement dans `application.properties`.
-Il regarde aussi les **propriétés système de la JVM**, et celles-ci ont **la priorité** sur le fichier.
-On peut donc surcharger une valeur sur un serveur donné :
+Deux façons de fournir la propriété système sur un serveur, à choisir avec l'exploitation :
 
-- au lancement : `-Ddatasource.jndi=java:jboss/datasources/AutreDS` ;
-- ou dans le `standalone.xml` :
+- **Directement dans `standalone.xml`** (ou `domain.xml`) :
   ```xml
   <system-properties>
-      <property name="datasource.jndi" value="java:jboss/datasources/AutreDS"/>
+      <property name="datasource.jndi" value="java:jboss/datasources/MonAppliDS"/>
   </system-properties>
   ```
+  Ou en CLI : `/system-property=datasource.jndi:add(value="java:jboss/datasources/MonAppliDS")`.
+- **Via un fichier chargé au démarrage** avec l'option `-P` : `standalone.sh -P file:///.../monappli.properties`.
+  Chaque ligne `cle=valeur` du fichier devient une propriété système. C'est ici, et seulement ici,
+  qu'intervient un chemin de fichier : c'est la **commande de démarrage** qui l'indique, pas
+  `datasource.jndi`. Par convention, on range ce fichier dans `standalone/configuration/`
+  (`${jboss.server.config.dir}`).
+
+**Si la propriété est absente** d'un serveur, le déploiement échoue immédiatement avec
+« Could not resolve placeholder 'datasource.jndi' ». C'est voulu : un oubli de configuration se voit
+au déploiement, pas à la première requête. Si vous préférez une valeur de secours, utilisez
+`jndi-name="${datasource.jndi:java:jboss/datasources/MonAppliDS}"` dans `application-springbean.xml` :
+tout ce qui suit le premier `:` est la valeur par défaut.
 
 > Contrairement à Spring Boot, il n'y a pas de correspondance automatique avec les variables
 > d'environnement du système : `DATASOURCE_JNDI` ne remplacera **pas** `datasource.jndi`.
-> Passez par des propriétés système (`-D...`).
+> Il faut une propriété système (`<system-properties>`, `-P` ou `-D...`).
+
+### 6.4 Le fichier `datasource.*` éventuellement présent sur le serveur
+
+Si un fichier contenant `datasource.connection-url`, `min-pool-size`, etc. existe sur le serveur, il
+sert au **script de création de la datasource**, pas à l'application. Par exemple :
+`jboss-cli.sh --properties=/chemin/datasource-prod.properties --file=creer-datasource.cli`, où le
+script contient la commande du § 6.2. Ces valeurs finissent dans `standalone.xml` ; l'application ne
+les lit jamais.
 
 ### 6.5 À transmettre à l'équipe qui déploie
 
-- la liste des clés `datasource.*` et le nom JNDI attendu (`datasource.jndi`) ;
+- le nom de la propriété système à définir sur chaque JBoss (`datasource.jndi`) et sa valeur (le
+  `jndi-name` de la datasource) ;
 - la demande de création de la datasource sur chaque JBoss (commande du § 6.2) ;
 - la vérification par `test-connection-in-pool` (§ 7) avant le premier déploiement.
 
@@ -377,15 +401,99 @@ On peut donc surcharger une valeur sur un serveur donné :
 
 ---
 
-## 8. Points de vigilance
+## 8. Tester en local avec un JBoss sous Docker
+
+Le dossier `docker-local/` lance un WildFly, la version communautaire de JBoss EAP, en Java 8. Il
+permet de vérifier, sans serveur distant ni Oracle :
+1. qu'un fichier de propriétés chargé par JBoss (`-P`) devient bien une propriété système ;
+2. que la datasource `java:jboss/datasources/MonAppliDS` existe et répond ;
+3. que l'EAR démarre : Spring résout `${datasource.jndi}` et trouve la datasource en JNDI.
+
+| Fichier | Rôle |
+|---|---|
+| `Dockerfile` | Java 8 + WildFly, création de la datasource, utilisateur de la console |
+| `setup-datasource.cli` | Crée `MonAppliDS` (même nom JNDI qu'en prod) sur la base H2 livrée avec WildFly, en mode Oracle |
+| `monappli.properties` | Le fichier « serveur » : `datasource.jndi=...`, chargé au démarrage par `-P` |
+| `docker-compose.yml` | Monte le fichier de propriétés et le dossier `deployments/`, expose les ports 8080 et 9990 |
+
+**Version** : alignez `WILDFLY_VERSION` (dans `docker-compose.yml`) sur votre EAP :
+EAP 7.0 → `10.1.0.Final`, 7.1 → `11.0.0.Final`, 7.2 → `14.0.1.Final`, 7.3 → `18.0.1.Final`,
+7.4 → `23.0.2.Final`. Le serveur indique sa version au démarrage, et `standalone.sh --version` la
+donne aussi.
+
+### 8.1 Démarrer
+
+```bash
+cd docker-local
+docker compose up --build        # 1er lancement : télécharge Java 8 et WildFly (~200 Mo)
+```
+
+Attendez la ligne `WFLYSRV0025: WildFly Full ... started`.
+
+### 8.2 Vérification 1 : la propriété est chargée
+
+Dans un second terminal :
+
+```bash
+docker compose exec jboss /opt/wildfly/bin/jboss-cli.sh --connect \
+  --command='/core-service=platform-mbean/type=runtime:read-attribute(name=system-properties)' \
+  | grep datasource
+```
+
+Attendu : `"datasource.jndi" => "java:jboss/datasources/MonAppliDS"`.
+
+### 8.3 Vérification 2 : la datasource répond
+
+```bash
+docker compose exec jboss /opt/wildfly/bin/jboss-cli.sh --connect \
+  --command='/subsystem=datasources/data-source=MonAppliDS:test-connection-in-pool'
+```
+
+Attendu : `"outcome" => "success"`. La même commande vous servira sur les vrais serveurs (§ 7).
+
+### 8.4 Vérification 3 : l'application démarre
+
+1. Construisez l'EAR (`mvn package` à la racine du projet), puis copiez-le dans `docker-local/deployments/`.
+2. WildFly le déploie automatiquement. Un fichier `monappli.ear.deployed` apparaît en cas de
+   succès, ou `monappli.ear.failed` en cas d'échec (il contient l'erreur).
+3. Dans les logs (`docker compose logs -f`), le démarrage du contexte Spring ne doit afficher ni
+   `Could not resolve placeholder`, ni `NameNotFoundException`.
+4. Les endpoints SOAP sont accessibles sur `http://localhost:8080/...`. La console
+   `http://localhost:9990` (admin / `Admin#local1`, usage local uniquement) liste les déploiements
+   et les datasources.
+
+### 8.5 Contre-épreuve : la propriété absente fait échouer le déploiement
+
+Mettez la ligne `datasource.jndi` de `monappli.properties` en commentaire, puis
+`docker compose restart`. Le déploiement doit échouer avec
+`Could not resolve placeholder 'datasource.jndi'`. Remettez la ligne et redémarrez. Le fichier
+n'est lu qu'au démarrage : chaque modification demande un `restart`.
+
+### 8.6 Limites
+
+- **H2 n'est pas Oracle** : les tables métier n'existent pas, donc les appels qui interrogent la base
+  échoueront. Ce montage valide **la configuration et le câblage**, pas les requêtes. Pour cela, il
+  faut une vraie base : celle de recette, ou une image Oracle XE en Docker avec le driver `ojdbc8`
+  installé comme module WildFly. C'est plus lourd, et ce n'est utile que si vous devez tester les
+  requêtes en local.
+- **Autres dépendances du serveur** : si l'EAR attend d'autres ressources des JBoss réels (module de
+  configuration déclaré dans `jboss-deployment-structure.xml`, autres datasources, files JMS,
+  security-domain), le déploiement local échouera pour ces raisons-là. Le message de
+  `monappli.ear.failed` les nomme ; il faut alors les ajouter dans `setup-datasource.cli` ou dans le Dockerfile.
+- **WildFly ≈ EAP** : pour ce qui nous concerne (`-P`, `<system-properties>`, datasources, JNDI), le
+  comportement est le même. Ce n'est pas pour autant une recette officielle de la production.
+
+---
+
+## 9. Points de vigilance
 
 - **Version Spring** : « 5.12 » n'existe pas. Il s'agit probablement de 5.1.2, 5.2.12 ou 5.3.12.
   Le code fonctionne avec toute version 5.x. `spring-jdbc` doit avoir **la même version** que
   `spring-context` : ne mettez pas de version en dur si le pom parent la gère, sinon utilisez
   `${spring.version}`.
 - **Un seul property-placeholder** : si `application-springbean.xml` déclare déjà un
-  `<context:property-placeholder>` ou un `PropertyPlaceholderConfigurer`, ajoutez simplement les
-  propriétés dans `application.properties`. N'en déclarez pas un deuxième : deux placeholders sans
+  `<context:property-placeholder>` ou un `PropertyPlaceholderConfigurer`, gardez-le : il résout aussi
+  les propriétés système, donc `${datasource.jndi}` fournie par JBoss. N'en déclarez pas un deuxième : deux placeholders sans
   `ignore-unresolvable="true"` provoquent des erreurs « Could not resolve placeholder ».
 - **Schémas XSD** : les fichiers utilisent `http://www.springframework.org/schema/...`, résolu hors
   ligne depuis les jars Spring quelle que soit la version 5.x. Gardez le même style que vos fichiers
@@ -413,7 +521,7 @@ On peut donc surcharger une valeur sur un serveur donné :
 
 ---
 
-## 9. Correspondance Spring Boot → Spring XML
+## 10. Correspondance Spring Boot → Spring XML
 
 | Ce que vous faites en Spring Boot | Ici (Spring 5, XML, JBoss) |
 |---|---|
@@ -427,8 +535,8 @@ On peut donc surcharger une valeur sur un serveur donné :
 | `@SpringBootTest` | `@RunWith(SpringJUnit4ClassRunner.class)` + `@ContextConfiguration("classpath:test-context.xml")` |
 | `@MockBean` | `Mockito.mock(...)` passé au constructeur du service |
 | Profils `application-test.properties` | Un fichier XML de test qui redéfinit le bean `dataSource` (`test-context.xml`) |
-| `application-prod.properties` / profils par environnement | Même EAR partout ; valeurs fournies par chaque JBoss (datasource, module de config) — § 6 |
-| Variables d'environnement `SPRING_DATASOURCE_URL` (relaxed binding) | Pas d'équivalent automatique : propriétés système `-Dcle=valeur` (§ 6.4) |
+| `application-prod.properties` / profils par environnement | Même EAR partout ; `datasource.jndi` en propriété système de chaque JBoss, datasource dans son `standalone.xml` — § 6 |
+| Variables d'environnement `SPRING_DATASOURCE_URL` (relaxed binding) | Pas d'équivalent automatique : propriétés système (`<system-properties>`, `-P`, `-D`) — § 6.3 |
 
 ---
 

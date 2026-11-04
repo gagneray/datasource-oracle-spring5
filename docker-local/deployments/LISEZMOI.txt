@@ -1,0 +1,4 @@
+Copiez ici l'EAR construit (ex. ear/target/monappli.ear) : WildFly le déploie automatiquement.
+Fichiers marqueurs créés par WildFly à côté de l'EAR :
+  monappli.ear.deployed  -> déploiement réussi
+  monappli.ear.failed    -> échec (le contenu du fichier donne l'erreur)

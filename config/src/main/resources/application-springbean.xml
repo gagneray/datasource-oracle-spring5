@@ -16,9 +16,9 @@
 
     <!-- Lit application.properties et remplace les ${...} dans les fichiers XML Spring.
          (Équivalent de ce que Spring Boot fait tout seul avec application.properties.)
-         Les propriétés système JVM (-Dcle=valeur, ou <system-properties> du standalone.xml)
-         sont aussi consultées et priment sur le fichier : utile pour surcharger une valeur
-         sur un environnement donné (README § 6.4). -->
+         Il consulte AUSSI les propriétés système JVM (<system-properties> du standalone.xml,
+         fichier chargé par "standalone.sh -P ...", ou -Dcle=valeur), prioritaires sur le fichier.
+         C'est par ce biais que chaque JBoss fournit datasource.jndi (README § 6.3). -->
 
     <!-- Ce fichier et metier-context.xml doivent être chargés dans le MÊME contexte Spring
          (contextConfigLocation du web.xml ou <import>), sinon JdbcQueryDao ne trouvera pas "dataSource". -->
@@ -28,6 +28,10 @@
          A. (RECOMMANDÉ sur JBoss) DataSource récupéré dans l'annuaire JNDI du serveur.
             JBoss gère connexion, pool, driver et mot de passe protégé.
             Équivalent Spring Boot : spring.datasource.jndi-name=...
+            ${datasource.jndi} = NOM JNDI de la datasource (ex. java:jboss/datasources/MonAppliDS),
+            fourni par JBoss en propriété système. Absent -> échec immédiat du déploiement
+            ("Could not resolve placeholder"), voulu. Valeur de secours possible :
+            jndi-name="${datasource.jndi:java:jboss/datasources/MonAppliDS}"
          ================================================================= -->
     <jee:jndi-lookup id="dataSource"
                      jndi-name="${datasource.jndi}"
@@ -38,6 +42,8 @@
             Pool géré par l'application. Nécessite d'ajouter la dépendance
             org.apache.commons:commons-dbcp2:2.9.0 et le driver ojdbc8 dans l'EAR.
             Supprimez le bloc A ci-dessus si vous utilisez celui-ci.
+            Les clés datasource.* ci-dessous devront alors être fournies à l'application
+            (propriétés système JBoss, comme datasource.jndi).
          ================================================================= -->
     <!--
     <bean id="dataSource" class="org.apache.commons.dbcp2.BasicDataSource" destroy-method="close">

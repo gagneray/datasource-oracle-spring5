@@ -1,0 +1,8 @@
+# Exécuté pendant la construction de l'image, sur un serveur "embarqué" (pas besoin de le démarrer).
+embed-server --server-config=standalone.xml --std-out=echo
+
+# Équivalent local de la datasource Oracle de production : même nom JNDI, base H2 en mémoire en mode Oracle.
+# Le driver "h2" est fourni par WildFly (c'est celui de la datasource d'exemple ExampleDS).
+data-source add --name=MonAppliDS --jndi-name=java:jboss/datasources/MonAppliDS --driver-name=h2 --connection-url="jdbc:h2:mem:monappli;MODE=Oracle;DB_CLOSE_DELAY=-1" --user-name=sa --password=sa --min-pool-size=1 --max-pool-size=5
+
+stop-embedded-server

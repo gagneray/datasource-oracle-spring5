@@ -1,0 +1,15 @@
+services:
+  jboss:
+    build:
+      context: .
+      args:
+        WILDFLY_VERSION: 23.0.2.Final   # à aligner sur votre version d'EAP (voir Dockerfile)
+    container_name: monappli-jboss
+    ports:
+      - "8080:8080"   # applications (endpoints SOAP)
+      - "9990:9990"   # console d'administration : admin / Admin#local1
+    volumes:
+      # Le fichier de propriétés "serveur", modifiable sans reconstruire l'image
+      - ./monappli.properties:/opt/config/monappli.properties:ro
+      # Déposez votre EAR dans ./deployments : il est déployé automatiquement
+      - ./deployments:/opt/wildfly/standalone/deployments
